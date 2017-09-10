@@ -1,0 +1,31 @@
+﻿{
+  "version": "1.0.0",
+  "restore": {
+    "projectUniqueName": "/home/turbo/treetop/treetop/treetop.csproj",
+    "projectName": "treetop",
+    "projectPath": "/home/turbo/treetop/treetop/treetop.csproj",
+    "outputPath": "/home/turbo/treetop/treetop/obj/",
+    "projectStyle": "PackageReference",
+    "originalTargetFrameworks": [
+      "netcoreapp2.0"
+    ],
+    "frameworks": {
+      "netcoreapp2.0": {
+        "projectReferences": {}
+      }
+    }
+  },
+  "frameworks": {
+    "netcoreapp2.0": {
+      "dependencies": {
+        "Microsoft.NETCore.App": {
+          "target": "Package",
+          "version": "2.0.0-preview1-002111-00"
+        }
+      },
+      "imports": [
+        "net461"
+      ]
+    }
+  }
+}
