@@ -10,7 +10,15 @@ namespace treetop
 {
     public static class Program
     {
-        private static void Main(string[] args) => new Stat(args).Summarize();
+        private static void Main(string[] args)
+        {
+            var top = new Stat(args);
+
+            do
+            {
+                top.Trace();
+            } while (top.Summarize());
+        }
     }
     
     public class Stat
@@ -18,9 +26,9 @@ namespace treetop
         private const string Header = "treetop v1.0.5";
         private double _memory;
         private double _cpu;
-        private readonly Dictionary<ulong, Process> _processes;
-        private readonly long _total;
-        private readonly Stopwatch _sampleTime;
+        private Dictionary<ulong, Process> _processes;
+        private long _total;
+        private Stopwatch _sampleTime;
         private readonly ulong _rootPid = 1;
         private readonly bool _recurse = true;
         private int _longName = 5;
@@ -31,7 +39,9 @@ namespace treetop
         private readonly int _pidLimit; 
         private int _timeLimit; // TODO Enforce, only in continuous mode?
         private bool _jsonBuf; // Output as JSON TODO implement
-        private readonly List<ulong> excList = new List<ulong>();
+        private readonly List<ulong> _excList = new List<ulong>();
+        private readonly bool _loop;
+        private int _realCount;
 
         private class Process
         {
@@ -81,17 +91,24 @@ namespace treetop
                         break;
                     case "-e":
                     case "--exclude":
-                        excList.AddRange(args[++ptr].Split(",").Select(ulong.Parse));
+                        _excList.AddRange(args[++ptr].Split(",").Select(ulong.Parse));
+                        break;
+                    case "-r":
+                    case "--repeat":
+                        _loop = true;
                         break;
                     default:
                         _rootPid = ulong.Parse(args[ptr]);
                         break;
                 }
-                
-                Console.WriteLine($"Arg{ptr}: {args[ptr]}");
             }
-            
-            
+        }
+
+        public void Trace()
+        {
+            _longName = 5;
+            _cpu = 0;
+            _memory = 0;
             _processes = new Dictionary<ulong, Process>();
             _sampleTime = new Stopwatch();
             _sampleTime.Start();
@@ -139,8 +156,10 @@ namespace treetop
             .Select(long.Parse)
             .Sum();                         
 
-        public void Summarize()
+        public bool Summarize()
         {
+            _realCount = _processes.Count;
+            
             var sublist = _processes.Aggregate(
                 "", 
                 (current, proc) => 
@@ -152,68 +171,104 @@ namespace treetop
                         PidGetCPU(proc.Key, proc.Value.StartPidTime), 
                         proc.Value.Mode));
 
+            if (_loop && !_jsonBuf) Console.Clear();
+            
             Console.Write(
                 $"=== {Header} - " +
                 $"({Math.Round(_sampleTime.Elapsed.TotalMilliseconds, 2)} ms / " +
                 $"{Math.Round(1e3 / _sampleTime.Elapsed.TotalMilliseconds, 3)} Hz)" +
                 $" PID {_rootPid}" +
-                $"{(_recurse && _processes.Count > 1 ? " and " + (_processes.Count - 1) + " childs" : "")} ===\n" +
+                $"{(_recurse && _realCount > 1 ? " and " + (_realCount - 1) + " childs" : "")} ===\n" +
                 $"{FormatLine(_rootPid, "total", _memory, _cpu, "+")}{sublist}"
             );
+
+            return _loop;
         }
 
         private double PidGetCPU(ulong pid, long sst)
         {
-            var cpu = Environment.ProcessorCount * (sst + CPUGetProcessUsage(pid)) * 1e2 / _total;
-            
-            _cpu += cpu;
-            if(_cpuLimit > 0 && _cpu > _cpuLimit) killWithFire();
-            
-            return cpu;
+            try
+            {
+                var cpu = Environment.ProcessorCount * (sst + CPUGetProcessUsage(pid)) * 1e2 / _total;
+
+                _cpu += cpu;
+                if (_cpuLimit > 0 && _cpu > _cpuLimit) KillWithFire();
+
+                return cpu;
+            }
+            catch (FileNotFoundException)
+            {
+                _realCount--;
+                return -1;
+            }
         }
 
-        private string FormatLine(ulong pid, string cmd, double mem, double cpu, string mod = " ") 
-            => $"{(_rootPid == pid && mod == " " ? "*" : mod)}" +
-               $" {string.Format("{0,8}", pid)}" +
-               $" {string.Format("{0,-" + _longName + "}", cmd)}" +
-               $" {string.Format("{0,8}", Math.Round(mem, 2))} M" +
-               $" {string.Format("{0,6}", Math.Round(cpu, 2))} %\n";
+        private string FormatLine(ulong pid, string cmd, double mem, double cpu, string mod = " ")
+        {
+            if (cpu < 0) return "";
+            
+            return $"{(_rootPid == pid && mod == " " ? "*" : mod)}" +
+                   $" {string.Format("{0,8}", pid)}" +
+                   $" {string.Format("{0,-" + _longName + "}", cmd)}" +
+                   $" {string.Format("{0,8}", Math.Round(mem, 2))} M" +
+                   $" {string.Format("{0,6}", Math.Round(cpu, 2))} %\n";
+        }
 
         private void BuildProccessTree(ulong inPid)
         {
-            if(excList.Contains(inPid)) return;
-            
-            var input = File.ReadAllText($@"/proc/{inPid}/task/{inPid}/children")
-                .Split(" ")
-                .Where(k => !string.IsNullOrEmpty(k))
-                .Select(ulong.Parse)
-                .ToList();
+            if(_excList.Contains(inPid)) return;
 
-            if (!input.Any()) return; 
-            
-            foreach (var process in input)
+            try
             {
-                if(process == _rootPid) continue;
-                AddUpdateProcess(process);
-                BuildProccessTree(process);
+                var input = File.ReadAllText($@"/proc/{inPid}/task/{inPid}/children")
+                    .Split(" ")
+                    .Where(k => !string.IsNullOrEmpty(k))
+                    .Select(ulong.Parse)
+                    .ToList();
+                
+                if (!input.Any()) return; 
+            
+                foreach (var process in input)
+                {
+                    if(process == _rootPid) continue;
+                    AddUpdateProcess(process);
+                    BuildProccessTree(process);
+                }
+            }
+            catch (FileNotFoundException)
+            {
+                Process val;
+                if(_processes.TryGetValue(inPid, out val))
+                    _processes.Remove(inPid);
             }
         }
 
         private void AddUpdateProcess(ulong pid)
         {
             _processes.Add(pid, new Process());
-            if(_pidLimit > 1 && _processes.Count > _pidLimit) killWithFire();
+            if(_pidLimit > 1 && _processes.Count > _pidLimit) KillWithFire();
             
             _memory += GetPidMemory(pid);
-            if (_memLimit > 0 && _memory > _memLimit) killWithFire();
+            if (_memLimit > 0 && _memory > _memLimit) KillWithFire();
             
             _processes[pid].StartPidTime = -CPUGetProcessUsage(pid);
         }
 
-        private void killWithFire()
+        private void KillWithFire()
         {
             foreach (var proc in _processes)
-                System.Diagnostics.Process.Start("/bin/bash", $" -c 'kill -9 {proc.Key}'");
+            {
+                try
+                {
+                    System.Diagnostics.Process.Start("/bin/bash", $"-c \"kill -9 {proc.Key} &>/dev/null\"");
+                }
+                catch
+                {
+                    // ignored
+                }
+            }
+            
+            Environment.Exit(0);
         }
 
         private double GetPidMemory(ulong pid)
@@ -243,7 +298,11 @@ namespace treetop
             }
             catch (FileNotFoundException)
             {
-                if (pid != _rootPid) return 0f;
+                if (pid != _rootPid)
+                {
+                    _processes.Remove(pid);
+                    return 0f;
+                }
                 
                 Console.Error.WriteLine(Header);
                 Console.ForegroundColor = ConsoleColor.Red;
