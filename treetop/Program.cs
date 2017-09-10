@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Web;
 
 namespace treetop
 {
@@ -13,7 +14,6 @@ namespace treetop
         private static void Main(string[] args)
         {
             var top = new Stat(args);
-
             do
             {
                 top.Trace();
@@ -38,7 +38,7 @@ namespace treetop
         private readonly bool _skipErrors;
         private readonly int _pidLimit; 
         private int _timeLimit; // TODO Enforce, only in continuous mode?
-        private bool _jsonBuf; // Output as JSON TODO implement
+        private readonly bool _jsonBuf; // Output as JSON TODO implement
         private readonly List<ulong> _excList = new List<ulong>();
         private readonly bool _loop;
         private int _realCount;
@@ -173,14 +173,21 @@ namespace treetop
 
             if (_loop && !_jsonBuf) Console.Clear();
             
-            Console.Write(
-                $"=== {Header} - " +
-                $"({Math.Round(_sampleTime.Elapsed.TotalMilliseconds, 2)} ms / " +
-                $"{Math.Round(1e3 / _sampleTime.Elapsed.TotalMilliseconds, 3)} Hz)" +
-                $" PID {_rootPid}" +
-                $"{(_recurse && _realCount > 1 ? " and " + (_realCount - 1) + " childs" : "")} ===\n" +
-                $"{FormatLine(_rootPid, "total", _memory, _cpu, "+")}{sublist}"
-            );
+            // [253.24,3453.23,33.5,[
+
+            if (_jsonBuf)
+                Console.WriteLine(
+                    $"[{_sampleTime.Elapsed.TotalMilliseconds},{_realCount - 1},{_memory},{_cpu},[{sublist.TrimEnd(',')}]]"
+                );
+            else
+                Console.Write(
+                    $"=== {Header} - " +
+                    $"({Math.Round(_sampleTime.Elapsed.TotalMilliseconds, 2)} ms / " +
+                    $"{Math.Round(1e3 / _sampleTime.Elapsed.TotalMilliseconds, 3)} Hz)" +
+                    $" PID {_rootPid}" +
+                    $"{(_recurse && _realCount > 1 ? " and " + (_realCount - 1) + " childs" : "")} ===\n" +
+                    $"{FormatLine(_rootPid, "total", _memory, _cpu, "+")}{sublist}"
+                );
 
             return _loop;
         }
@@ -206,7 +213,10 @@ namespace treetop
         private string FormatLine(ulong pid, string cmd, double mem, double cpu, string mod = " ")
         {
             if (cpu < 0) return "";
-            
+
+            if (_jsonBuf)
+                return $"[{pid},{HttpUtility.JavaScriptStringEncode(cmd, true)},{mem},{cpu}],";
+
             return $"{(_rootPid == pid && mod == " " ? "*" : mod)}" +
                    $" {string.Format("{0,8}", pid)}" +
                    $" {string.Format("{0,-" + _longName + "}", cmd)}" +
@@ -217,7 +227,7 @@ namespace treetop
         private void BuildProccessTree(ulong inPid)
         {
             if(_excList.Contains(inPid)) return;
-
+            
             try
             {
                 var input = File.ReadAllText($@"/proc/{inPid}/task/{inPid}/children")
@@ -245,13 +255,20 @@ namespace treetop
 
         private void AddUpdateProcess(ulong pid)
         {
-            _processes.Add(pid, new Process());
-            if(_pidLimit > 1 && _processes.Count > _pidLimit) KillWithFire();
-            
-            _memory += GetPidMemory(pid);
-            if (_memLimit > 0 && _memory > _memLimit) KillWithFire();
-            
-            _processes[pid].StartPidTime = -CPUGetProcessUsage(pid);
+            try
+            {
+                _processes.Add(pid, new Process());
+                if (_pidLimit > 1 && _processes.Count > _pidLimit) KillWithFire();
+
+                _memory += GetPidMemory(pid);
+                if (_memLimit > 0 && _memory > _memLimit) KillWithFire();
+
+                _processes[pid].StartPidTime = -CPUGetProcessUsage(pid);
+            }
+            catch (InvalidDataException)
+            {
+                
+            }
         }
 
         private void KillWithFire()
@@ -301,15 +318,19 @@ namespace treetop
                 if (pid != _rootPid)
                 {
                     _processes.Remove(pid);
-                    return 0f;
+                    throw new InvalidDataException();
                 }
+
+                if (_jsonBuf) Environment.Exit(0);
                 
-                Console.Error.WriteLine(Header);
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.Error.Write("Error");
-                Console.ResetColor();
-                Console.Error.WriteLine($": Process {pid} doesn't exist!");
-                Environment.Exit(1);
+                    Console.Error.WriteLine(Header);
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.Error.Write("Error");
+                    Console.ResetColor();
+                    Console.Error.WriteLine($": Process {pid} doesn't exist!");
+                    Environment.Exit(1);
+                
+                
             }
 
             return 0f;
