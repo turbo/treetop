@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net.Http.Headers;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web;
@@ -33,15 +34,26 @@ namespace treetop
         private readonly bool _recurse = true;
         private int _longName = 5;
         private readonly long _memLimit;
-        private readonly int _delay;
+        private int _delay;
         private readonly double _cpuLimit;
         private readonly bool _skipErrors;
         private readonly int _pidLimit; 
         private int _timeLimit; // TODO Enforce, only in continuous mode?
-        private readonly bool _jsonBuf; // Output as JSON TODO implement
+        private readonly bool _jsonBuf; 
         private readonly List<ulong> _excList = new List<ulong>();
         private readonly bool _loop;
         private int _realCount;
+        private readonly bool _gradual;
+        private readonly int _gradualRuntime;
+        private readonly Stopwatch _gradualTimer;
+        
+        private readonly Dictionary<int, int> _backoff = new Dictionary<int, int>()
+        {
+            {1, 500},
+            {5, 1000},
+            {10, 2000},
+            {60, 5000}
+        };
 
         private class Process
         {
@@ -97,6 +109,14 @@ namespace treetop
                     case "--repeat":
                         _loop = true;
                         break;
+                    case "-g":
+                    case "--gradual-backoff":
+                        _gradual = true;
+                        _gradualRuntime = int.Parse(args[++ptr]);
+                        _delay = 0;
+                        _gradualTimer = new Stopwatch();
+                        _gradualTimer.Start();
+                        break;
                     default:
                         _rootPid = ulong.Parse(args[ptr]);
                         break;
@@ -117,10 +137,20 @@ namespace treetop
             
             AddUpdateProcess(_rootPid);
             if (_recurse) BuildProccessTree(_rootPid);
-            
+
+            if (_gradual)
+                foreach (var treshold in _backoff)
+                    if (_gradualTimer.Elapsed.TotalSeconds > treshold.Key)
+                        _delay = treshold.Value;
+
             if(_delay > 0) Thread.Sleep(Math.Max(_delay - (int)_sampleTime.Elapsed.TotalMilliseconds, 0));
             
             _total += CPUGetTotalUsage();
+
+            if (!_gradual || !(_gradualTimer.Elapsed.TotalSeconds > _gradualRuntime)) return;
+            
+            KillWithFire();
+            Environment.Exit(5);
         }
 
         private long CPUGetProcessUsage(ulong inPid)
