@@ -8,7 +8,7 @@ using System.Threading;
 
 namespace treetop
 {
-    public class Program
+    public static class Program
     {
         private static void Main(string[] args) => new Stat(args).Summarize();
     }
@@ -16,20 +16,24 @@ namespace treetop
     public class Stat
     {
         private const string Header = "treetop v1.0.5";
-        public double Memory;
-        public double CPU;
-        public Dictionary<ulong, Process> Processes;
-        public long Total;
-        public Stopwatch SampleTime;
-        public ulong RootPid = 1;
-        public bool Recurse = true;
-        public int LongName = 5;
-        public long MemLimit = 0;
-        public int Delay;
-        public double CpuLimit;
-        public bool SkipErrors;
-        
-        public class Process
+        private double _memory;
+        private double _cpu;
+        private readonly Dictionary<ulong, Process> _processes;
+        private readonly long _total;
+        private readonly Stopwatch _sampleTime;
+        private readonly ulong _rootPid = 1;
+        private readonly bool _recurse = true;
+        private int _longName = 5;
+        private readonly long _memLimit;
+        private readonly int _delay;
+        private readonly double _cpuLimit;
+        private readonly bool _skipErrors;
+        private readonly int _pidLimit; 
+        private int _timeLimit; // TODO Enforce, only in continuous mode?
+        private bool _jsonBuf; // Output as JSON TODO implement
+        private readonly List<ulong> excList = new List<ulong>();
+
+        private class Process
         {
             public string Command;
             public long StartPidTime;
@@ -44,22 +48,43 @@ namespace treetop
                 switch (args[ptr])
                 {
                     case "-m":
-                        MemLimit = long.Parse(args[++ptr]);
+                    case "--memory-limit":
+                        _memLimit = long.Parse(args[++ptr]);
                         break;
                     case "-c":
-                        CpuLimit = long.Parse(args[++ptr]);
+                    case "--cpu-limit":
+                        _cpuLimit = long.Parse(args[++ptr]);
                         break;
                     case "-s":
-                        Recurse = false;
+                    case "--single-pid":
+                        _recurse = false;
                         break;
-                    case "-t":
-                        Delay = int.Parse(args[++ptr]);
+                    case "-d":
+                    case "--delay":
+                        _delay = int.Parse(args[++ptr]);
                         break;
                     case "-i":
-                        SkipErrors = true;
+                    case "--ignore-errors":
+                        _skipErrors = true;
+                        break;
+                    case "-p":
+                    case "--pid-limit":
+                        _pidLimit = int.Parse(args[++ptr]);
+                        break;
+                    case "-t":
+                    case "--time-limit":
+                        _timeLimit = int.Parse(args[++ptr]);
+                        break;
+                    case "-j":
+                    case "--json":
+                        _jsonBuf = true;
+                        break;
+                    case "-e":
+                    case "--exclude":
+                        excList.AddRange(args[++ptr].Split(",").Select(ulong.Parse));
                         break;
                     default:
-                        RootPid = ulong.Parse(args[ptr]);
+                        _rootPid = ulong.Parse(args[ptr]);
                         break;
                 }
                 
@@ -67,18 +92,18 @@ namespace treetop
             }
             
             
-            Processes = new Dictionary<ulong, Process>();
-            SampleTime = new Stopwatch();
-            SampleTime.Start();
+            _processes = new Dictionary<ulong, Process>();
+            _sampleTime = new Stopwatch();
+            _sampleTime.Start();
             
-            Total = -CPUGetTotalUsage();
+            _total = -CPUGetTotalUsage();
             
-            AddUpdateProcess(RootPid);
-            if (Recurse) BuildProccessTree(RootPid);
+            AddUpdateProcess(_rootPid);
+            if (_recurse) BuildProccessTree(_rootPid);
             
-            if(Delay > 0) Thread.Sleep(Math.Max(Delay - (int)SampleTime.Elapsed.TotalMilliseconds, 0));
+            if(_delay > 0) Thread.Sleep(Math.Max(_delay - (int)_sampleTime.Elapsed.TotalMilliseconds, 0));
             
-            Total += CPUGetTotalUsage();
+            _total += CPUGetTotalUsage();
         }
 
         private long CPUGetProcessUsage(ulong inPid)
@@ -87,7 +112,7 @@ namespace treetop
                 .Split(" ");
             
             var length = (
-                Processes[inPid].Command = 
+                _processes[inPid].Command = 
                     File.ReadAllText($"/proc/{inPid}/cmdline")
                         .Split("\0")
                         .First()
@@ -95,9 +120,9 @@ namespace treetop
                         .First()
             ).Length;
             
-            LongName = Math.Max(length, LongName);
+            _longName = Math.Max(length, _longName);
 
-            Processes[inPid].Mode = pidstat.Skip(2).First();
+            _processes[inPid].Mode = pidstat.Skip(2).First();
             
             return pidstat
                 .Skip(13)
@@ -114,9 +139,9 @@ namespace treetop
             .Select(long.Parse)
             .Sum();                         
 
-        public void Summarize(bool tty = true)
+        public void Summarize()
         {
-            var sublist = Processes.Aggregate(
+            var sublist = _processes.Aggregate(
                 "", 
                 (current, proc) => 
                     current + 
@@ -129,30 +154,35 @@ namespace treetop
 
             Console.Write(
                 $"=== {Header} - " +
-                $"({Math.Round(SampleTime.Elapsed.TotalMilliseconds, 2)} ms / " +
-                $"{Math.Round(1e3 / SampleTime.Elapsed.TotalMilliseconds, 3)} Hz)" +
-                $" PID {RootPid}" +
-                $"{(Recurse && Processes.Count > 1 ? " and " + (Processes.Count - 1) + " childs" : "")} ===\n" +
-                $"{FormatLine(RootPid, "total", Memory, CPU, "+")}{sublist}"
+                $"({Math.Round(_sampleTime.Elapsed.TotalMilliseconds, 2)} ms / " +
+                $"{Math.Round(1e3 / _sampleTime.Elapsed.TotalMilliseconds, 3)} Hz)" +
+                $" PID {_rootPid}" +
+                $"{(_recurse && _processes.Count > 1 ? " and " + (_processes.Count - 1) + " childs" : "")} ===\n" +
+                $"{FormatLine(_rootPid, "total", _memory, _cpu, "+")}{sublist}"
             );
         }
 
         private double PidGetCPU(ulong pid, long sst)
         {
-            var cpu = Environment.ProcessorCount * (sst + CPUGetProcessUsage(pid)) * 1e2 / Total;
-            CPU += cpu;
+            var cpu = Environment.ProcessorCount * (sst + CPUGetProcessUsage(pid)) * 1e2 / _total;
+            
+            _cpu += cpu;
+            if(_cpuLimit > 0 && _cpu > _cpuLimit) killWithFire();
+            
             return cpu;
         }
 
         private string FormatLine(ulong pid, string cmd, double mem, double cpu, string mod = " ") 
-            => $"{(RootPid == pid && mod == " " ? "*" : mod)}" +
+            => $"{(_rootPid == pid && mod == " " ? "*" : mod)}" +
                $" {string.Format("{0,8}", pid)}" +
-               $" {string.Format("{0,-" + LongName + "}", cmd)}" +
+               $" {string.Format("{0,-" + _longName + "}", cmd)}" +
                $" {string.Format("{0,8}", Math.Round(mem, 2))} M" +
                $" {string.Format("{0,6}", Math.Round(cpu, 2))} %\n";
 
         private void BuildProccessTree(ulong inPid)
         {
+            if(excList.Contains(inPid)) return;
+            
             var input = File.ReadAllText($@"/proc/{inPid}/task/{inPid}/children")
                 .Split(" ")
                 .Where(k => !string.IsNullOrEmpty(k))
@@ -163,7 +193,7 @@ namespace treetop
             
             foreach (var process in input)
             {
-                if(process == RootPid) continue;
+                if(process == _rootPid) continue;
                 AddUpdateProcess(process);
                 BuildProccessTree(process);
             }
@@ -171,9 +201,19 @@ namespace treetop
 
         private void AddUpdateProcess(ulong pid)
         {
-            Processes.Add(pid, new Process());
-            Memory += GetPidMemory(pid);
-            Processes[pid].StartPidTime = -CPUGetProcessUsage(pid);
+            _processes.Add(pid, new Process());
+            if(_pidLimit > 1 && _processes.Count > _pidLimit) killWithFire();
+            
+            _memory += GetPidMemory(pid);
+            if (_memLimit > 0 && _memory > _memLimit) killWithFire();
+            
+            _processes[pid].StartPidTime = -CPUGetProcessUsage(pid);
+        }
+
+        private void killWithFire()
+        {
+            foreach (var proc in _processes)
+                System.Diagnostics.Process.Start("/bin/bash", $" -c 'kill -9 {proc.Key}'");
         }
 
         private double GetPidMemory(ulong pid)
@@ -188,11 +228,11 @@ namespace treetop
                     .Select(int.Parse)
                     .Sum();
 
-                return Processes[pid].Memory = lost / 1024f;
+                return _processes[pid].Memory = lost / 1024f;
             }
             catch (UnauthorizedAccessException)
             {
-                if (SkipErrors) return 0f;
+                if (_skipErrors) return 0f;
 
                 Console.Error.WriteLine(Header);
                 Console.ForegroundColor = ConsoleColor.Red;
@@ -203,15 +243,14 @@ namespace treetop
             }
             catch (FileNotFoundException)
             {
-                if (pid == RootPid)
-                {
-                    Console.Error.WriteLine(Header);
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.Error.Write("Error");
-                    Console.ResetColor();
-                    Console.Error.WriteLine($": Process {pid} doesn't exist!");
-                    Environment.Exit(1);
-                }
+                if (pid != _rootPid) return 0f;
+                
+                Console.Error.WriteLine(Header);
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.Error.Write("Error");
+                Console.ResetColor();
+                Console.Error.WriteLine($": Process {pid} doesn't exist!");
+                Environment.Exit(1);
             }
 
             return 0f;
