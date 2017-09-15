@@ -1,7 +1,5 @@
 # treetop
 
-> **Note** This program is currently under development. Output and arguments are subject to change. Performance is bad.
-
 `treetop` is a linux program that accurately reports CPU and memory use for a single process, and, optionally, it's children. It's also able to enforce a variety of limits. Consider this a mix of `top` and `pstree`, stripped down to the bare minimals.
 
 ### Building
@@ -24,7 +22,7 @@ treetop v1.0.5
 Error: You don't have permission to access the smap data of process 1!
 ```
 
-As you can see, treetop will try to access the memory maps for this process. This is neccessary, because treetop does report the closest thing to the actual, physical memory consumption of a process. This is the cumulative private set size, or the sum of all unshared allocated memory for that process.
+As you can see, treetop will try to access the memory maps for this process. This is neccessary, because treetop does report the closest thing to the actual, physical memory consumption of a process. This is the cumulative proportional set size<sup>[[expl]](https://en.wikipedia.org/wiki/Proportional_set_size)</sup>, or the sum of all unshared memory for that process plus it's proportion of shared memory.
 
 Let's look at a more sensible example, using `chrome`:
 
@@ -126,6 +124,18 @@ This will show you the CPU share that each child, and the tree overall got of th
 -s / --single-pid           only probe the given PID
 -d / --delay                sample delay in ms
 -i / --ignore-errors        ignore and just not count PIDs with permission errors
--j / --json                 (**not implemented yet**) output JSON and nothing else
+-j / --json                 output JSON and nothing else
 -r / --repeat               loop (clears console if output is NOT json)
 ```
+
+### Gradual Backoff
+
+I originally wrote this to monitor server processes coressponding to web requests of unkown length. Many requests finish fast (<500ms), some take some time. I want to gradually adjust the sample rate depending on the run time. In my case, a nginx module creates the tast and immediately attaches treetop. There's a [map of sample rate reductions in the source](https://github.com/turbo/treetop/blob/master/treetop/Program.cs#L50-L56), which you can extend and modify.
+
+E.g. 
+
+```sh
+./treetop -r -j -g 15 1024
+```
+
+will output JSON samples at a gradually slower rate and kill the tree if it runs longer than 15 seconds.
